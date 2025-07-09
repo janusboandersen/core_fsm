@@ -13,7 +13,12 @@
     }
   ],
   "buildPresets": [
-    { "name": "host-debug", "configurePreset": "host-debug" }
+    {
+      "name": "host-debug", 
+      "configurePreset": "host-debug",
+      "verbose": true,
+      "nativeToolOptions": ["-v"] 
+    }
   ],
   "testPresets": [
     {
