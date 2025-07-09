@@ -31,7 +31,7 @@ target_include_directories(core_fsm PUBLIC include)
 
 # --- Strict ISO C++20 ---
 target_compile_features(core_fsm PUBLIC cxx_std_20)
-set(CMAKE_CXX_EXTENSIONS OFF)
+set_target_properties(core_fsm PROPERTIES CXX_EXTENSIONS OFF)
 
 # --- Make the build-directory the top level for tests ---
 enable_testing()
