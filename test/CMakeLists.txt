@@ -25,6 +25,7 @@ include(GoogleTest)                         # Test-discovery helpers
 # --- Test executable and linking ---
 add_executable(test_core_fsm 
     test_fsm_gtest.cpp
+    test_fsm_adapters_gtest.cpp
 )
 target_link_libraries(test_core_fsm
     PRIVATE
@@ -39,7 +40,12 @@ set_target_properties(test_core_fsm PROPERTIES CXX_EXTENSIONS OFF)
 # --- Static code analysis ---
 # Be aware, this is only compliant with configure-time resolution, i.e. not exports/installs.
 # Also, this is not MSVC compliant.
-target_compile_options(test_core_fsm PRIVATE -Wall -Wextra -Wpedantic)
+set(WARNING_FLAG    -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wnon-virtual-dtor -Wold-style-cast)
+set(SAN_FLAG        -fno-omit-frame-pointer -g -fno-sanitize-recover=undefined)
+set(ASAN_UBSAN      -fsanitize=address -fsanitize=undefined)
+target_compile_options( test_core_fsm PRIVATE ${WARNING_FLAG} ${SAN_FLAG} ${ASAN_UBSAN})
+target_link_options(    test_core_fsm PRIVATE ${ASAN_UBSAN})
+
 
 # --- Test-discovery, equivalent to test_core_foo --gtest_list_tests ---
 gtest_discover_tests(test_core_fsm DISCOVERY_MODE POST_BUILD)

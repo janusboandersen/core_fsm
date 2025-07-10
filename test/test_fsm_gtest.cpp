@@ -10,95 +10,81 @@
     }
     @enduml
  * 
- * Janus, August 2025
+ * Janus, July 2025
  */
 
 #include <gtest/gtest.h>
 #include "core_fsm/fsm.hpp"
 
-// --- Scoping ---
-using core_fsm::OutcomeT;
-
-
-// --- Forward declare types, guards, actions for this machine ---
-struct MCtx;                                                            // The Machine itself
-enum class MStateKey : std::uint8_t;                                    // State names like Green, Yellow, Red
-enum class MEvent : std::uint8_t;                                       // Events like Timer, Button
-using MStateT = core_fsm::StateT<MCtx, MEvent>;                         // State objects corresponding the names Green, Yellow, Red
-using MEventQueueT = core_fsm::StdQueueAdapter<MEvent, 32>;
-using MTransitionTable = core_fsm::TransitionTableT<MStateKey, MEvent, MCtx, 3>;
-inline constexpr auto g_always = core_fsm::g_always<MCtx>;
-inline constexpr auto g_never = core_fsm::g_never<MCtx>;
-inline constexpr auto a_nothing = core_fsm::a_nothing<MCtx>;
-inline constexpr void a_side_effect(MCtx&);
-
-// --- Enumerate states for this machine ---
+namespace {
+// --- Enumerate states and events for this machine ---
 enum class MStateKey : std::uint8_t { Green, Yellow, Red };
-
-// --- Implement events for this machine ---
 enum class MEvent : std::uint8_t { Timer, Button, Missing };
+constexpr std::size_t n_states {3};
+constexpr std::size_t n_queue_len {32};
 
-// --- Table for transitions ---
-constexpr MTransitionTable machine_transitions {{
-//  From State              Event           Outcome         Guard       Action          Next State
-    {MStateKey::Green,      MEvent::Timer,  OutcomeT::OK,   g_always,   a_side_effect,  MStateKey::Yellow  },
-    {MStateKey::Yellow,     MEvent::Timer,  OutcomeT::OK,   nullptr,    nullptr,        MStateKey::Red     },
-    {MStateKey::Red,        MEvent::Timer,  OutcomeT::OK,   g_never,    a_nothing,      MStateKey::Green   },
+// --- Prototype the machine with 3 states ---
+struct MCtx;
+using Factory = core_fsm::StlQueueMachineBuilder<MCtx, MStateKey, MEvent, n_states, n_queue_len>;
+
+// --- Transitions (table must outlive MCtx and BaseCtx) ---
+using Outcome = Factory::Outcome;
+inline constexpr void a_side_effect(MCtx&);
+constexpr Factory::TransitionTable<3> transitions {{
+//  From State              On Event        Given Outcome   With Guard              Do Action               To Next State
+    {MStateKey::Green,      MEvent::Timer,  Outcome::OK,    Factory::g_always,      a_side_effect,          MStateKey::Yellow  },
+    {MStateKey::Yellow,     MEvent::Timer,  Outcome::OK,    nullptr,                nullptr,                MStateKey::Red     },
+    {MStateKey::Red,        MEvent::Timer,  Outcome::OK,    Factory::g_never,       Factory::a_nothing,     MStateKey::Green   },
 }};
 
-// --- Extend the context ---
-struct MCtx final : core_fsm::ContextBaseT<MCtx, MStateKey, MEvent, MEventQueueT>{
-public:
-    // --- Extended state ---
-    int enters{0};
-    int exits{0};
-    int handled{0};
-
-    // --- Side effects ---
-    int side_effects{0};
-
-    // --- Translate state key to final state obj ---
-    std::unique_ptr<MStateT> make_state(const MStateKey& key);
-};
-
 // --- The LedColor states all implement the the same handling, so let's share this ---
-struct LedColorState : MStateT {
-    void on_enter(MCtx& ctx) noexcept override { ++ctx.enters; }
-    void on_exit(MCtx& ctx) noexcept override { ++ctx.exits; }
-
-    OutcomeT on_event(MCtx& ctx, const MEvent& ev) override {
-        ++ctx.handled;
-
-        // Here we implement as switch before we build the dispatcher, and without the guard
-        switch (ev) {
-            case MEvent::Timer:
-                return OutcomeT::OK;
-            default:
-                return OutcomeT::IGNORE;
-        }
-    }
+struct LedColorState : Factory::State {
+    void on_enter(MCtx& ctx) noexcept override;
+    void on_exit (MCtx& ctx) noexcept override;
+    Factory::Outcome on_event(MCtx& ctx, const MEvent& event) override;
 };
 
-// --- Final states ---
+// --- Final 3 LED color state objects ---
 struct GreenLedColor final : LedColorState {};
 struct YellowLedColor final : LedColorState {};
 struct RedLedColor final : LedColorState {};
 
-// --- Translation between keys and final states ---
-std::unique_ptr<MStateT> MCtx::make_state(const MStateKey& key) {
-    switch (key) {
-        case MStateKey::Green:
-            return std::make_unique<GreenLedColor>();
-        case MStateKey::Yellow:
-            return std::make_unique<YellowLedColor>();
-        case MStateKey::Red:
-            return std::make_unique<RedLedColor>();
-    }
-}
+// --- Extend the Machine context ---
+struct MCtx final : Factory::BaseCtx {
 
-// --- Actions ---
-inline constexpr void a_side_effect(MCtx& ctx) {
-    ctx.side_effects++;
+    // Set up available states, transitions and default state
+    MCtx() {
+        register_state(MStateKey::Green,    green_);
+        register_state(MStateKey::Yellow,   yellow_);
+        register_state(MStateKey::Red,      red_);
+        set_table(transitions);
+        const auto ok = initialize(MStateKey::Green);
+        if (!ok) std::terminate();
+    }
+
+    // --- Extended state variables for testing ---
+    int enters{0};
+    int exits{0};
+    int handled{0};
+    int side_effects{0};
+    MStateKey last_enter_seen_state{MStateKey::Green};
+    MStateKey last_exit_seen_state{MStateKey::Green};
+
+    // --- State obj lifetime owned here: Objects must live as long as BaseCtx ---
+    GreenLedColor   green_ {};
+    YellowLedColor  yellow_ {};
+    RedLedColor     red_ {};
+};
+
+// --- Action function bodies ---
+inline constexpr void a_side_effect(MCtx& ctx) { ctx.side_effects++; }
+
+// --- State method bodies ---
+inline void LedColorState::on_enter(MCtx& ctx) noexcept { ++ctx.enters; ctx.last_enter_seen_state = ctx.get_state_key(); }
+inline void LedColorState::on_exit (MCtx& ctx) noexcept { ++ctx.exits; ctx.last_exit_seen_state = ctx.get_state_key(); }
+inline auto LedColorState::on_event(MCtx& ctx, const MEvent& ev) -> Factory::Outcome {
+    ++ctx.handled;
+    return ev == MEvent::Timer ? Factory::Outcome::OK : Factory::Outcome::IGNORE;
 }
 
 
@@ -106,15 +92,10 @@ inline constexpr void a_side_effect(MCtx& ctx) {
 class ColorStateTest : public ::testing::Test {
 protected:
     MCtx machine{};
-
-    void SetUp() override {
-        machine.set_initial_state(MStateKey::Green);   // default state
-        machine.set_table(machine_transitions);
-    }
-
+    void SetUp() override {}
     void TearDown() override {}
 };
-
+}
 
 // --- Tests: Now we focus on the context being able to dispatch correctly (in the prev. example we tested that the State reacts correctly) ---
 TEST_F(ColorStateTest, EntryHooksRunInSetup) {
@@ -124,28 +105,29 @@ TEST_F(ColorStateTest, EntryHooksRunInSetup) {
 
 TEST_F(ColorStateTest, InitializerCanOnlyRunOnce) {
     ASSERT_EQ(machine.get_state_key(), MStateKey::Green);       // Default state as per object setup
-    machine.set_initial_state(MStateKey::Red);
+    const auto ok = machine.initialize(MStateKey::Red);
+    EXPECT_FALSE(ok);
     EXPECT_EQ(machine.get_state_key(), MStateKey::Green);       // Stays in default state
 }
 
 TEST_F(ColorStateTest, MissingEventHandledGracefully) {
     ASSERT_EQ(machine.get_state_key(), MStateKey::Green);       // Default state as per object setup
-    machine.post(MEvent::Missing);
+    (void) machine.post(MEvent::Missing);
     machine.step();
     EXPECT_EQ(machine.get_state_key(), MStateKey::Green);       // Stays in default state
 }
 
 TEST_F(ColorStateTest, ColorStateAdvancesOnTimer) {
     ASSERT_EQ(machine.get_state_key(), MStateKey::Green);       // Default state as per object setup
-    machine.post(MEvent::Timer);
+    (void) machine.post(MEvent::Timer);
     machine.step();
     EXPECT_EQ(machine.get_state_key(), MStateKey::Yellow);      // Advanced one step to yellow
 }
 
 TEST_F(ColorStateTest, NullPtrGuardAndActionPassGracefully) {
     ASSERT_EQ(machine.get_state_key(), MStateKey::Green);       // Default state as per object setup
-    machine.post(MEvent::Timer);                                // -> Yellow
-    machine.post(MEvent::Timer);                                // -> Red: guard = nullptr, action = nullptr
+    (void) machine.post(MEvent::Timer);                         // -> Yellow
+    (void) machine.post(MEvent::Timer);                         // -> Red: guard = nullptr, action = nullptr
     machine.step();
     machine.step();
     EXPECT_EQ(machine.get_state_key(), MStateKey::Red);         // Advanced gracefully to Red
@@ -153,9 +135,9 @@ TEST_F(ColorStateTest, NullPtrGuardAndActionPassGracefully) {
 
 TEST_F(ColorStateTest, NeverGuardBlocksTransition) {
     ASSERT_EQ(machine.get_state_key(), MStateKey::Green);       // Default state as per object setup
-    machine.post(MEvent::Timer);                                // -> Yellow
-    machine.post(MEvent::Timer);                                // -> Red
-    machine.post(MEvent::Timer);                                // -> Green [blocked by guard]
+    (void) machine.post(MEvent::Timer);                         // -> Yellow
+    (void) machine.post(MEvent::Timer);                         // -> Red
+    (void) machine.post(MEvent::Timer);                         // -> Green [blocked by guard]
     machine.step();
     machine.step();
     machine.step();
@@ -165,8 +147,27 @@ TEST_F(ColorStateTest, NeverGuardBlocksTransition) {
 TEST_F(ColorStateTest, SideEffectIsRun) {
     ASSERT_EQ(machine.get_state_key(), MStateKey::Green);       // Default state as per object setup
     ASSERT_EQ(machine.side_effects, 0);                         // Default state as per object setup
-    machine.post(MEvent::Timer);
+    (void) machine.post(MEvent::Timer);
     machine.step();
     ASSERT_EQ(machine.get_state_key(), MStateKey::Yellow);
     EXPECT_EQ(machine.side_effects, 1);                         // Side effect ran
+}
+
+TEST_F(ColorStateTest, EnterHookSeesCommittedState) {
+    // --- Enfore that on_enter sees the right context state ---
+    ASSERT_EQ(machine.get_state_key(), MStateKey::Green);           // Start Green
+    (void) machine.post(MEvent::Timer);                             // Timer event
+    machine.step();                                                 // React, and go to Yellow
+    EXPECT_EQ(machine.last_enter_seen_state, MStateKey::Yellow);    // On enter, Yellow must be committed
+}
+
+TEST_F(ColorStateTest, ExitHookSeesCommittedState) {
+    // --- Enfore that on_enter sees the right context state ---
+    ASSERT_EQ(machine.get_state_key(), MStateKey::Green);
+    (void) machine.post(MEvent::Timer);
+    (void) machine.post(MEvent::Timer);
+    machine.step();
+    machine.step();
+    ASSERT_EQ(machine.get_state_key(), MStateKey::Red);
+    EXPECT_EQ(machine.last_exit_seen_state, MStateKey::Yellow);
 }
